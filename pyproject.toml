@@ -1,0 +1,17 @@
+[project]
+name = "aws-cn-phd-notification"
+version = "0.1.0"
+description = "AWS中国区 Personal Health Dashboard 集中IM通知"
+requires-python = ">=3.14"
+dependencies = [
+    "lark-oapi",
+    "requests",
+]
+
+[dependency-groups]
+lambda = [
+    "requests",
+]
+
+[tool.uv]
+package = false
