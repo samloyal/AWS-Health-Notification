@@ -38,13 +38,29 @@
 ## 文件说明
 
 ```
-PhD/
+AWSCN-PhD-Notification/
 ├── CNPhDCentral.yaml          # 集中通知账号的CloudFormation模板
 ├── CNPhDPush.yaml             # 推送账号的CloudFormation模板
 ├── function/
-│   ├── lambda_function.py     # Lambda通知函数代码
-│   └── requests-layer-python314.zip  # Python requests库的Lambda Layer包
+│   ├── lambda_function.py     # Lambda通知函数代码（唯一源文件）
+│   ├── build_layer.sh         # 构建 requests Lambda Layer 包
+│   └── sync_inline_code.py    # 将 lambda_function.py 同步进 CNPhDCentral.yaml 的内联代码
+├── pyproject.toml             # uv 项目定义与依赖
+├── uv.lock                    # 依赖锁定文件
+├── lark-urgent.py             # 飞书消息+加急脚本（详见 lark-urgent-README.md）
+├── lark-urgent-README.md
+├── ARCHITECTURE.md            # 架构图与事件流程
 └── README.md                  # 本文档
+```
+
+## 本地开发（uv）
+
+本项目使用 [uv](https://docs.astral.sh/uv/) 管理依赖与版本锁定，依赖定义在 `pyproject.toml`，锁定结果在 `uv.lock`（Lambda Layer 也由它生成）。
+
+```bash
+uv sync                      # 创建 .venv 并按 uv.lock 安装依赖
+uv run python lark-urgent.py # 在项目环境中运行（需设置 APP_ID 等环境变量）
+uv lock                      # 修改 pyproject.toml 后重新锁定
 ```
 
 ## 部署步骤
@@ -64,20 +80,14 @@ PhD/
 2. **创建Lambda Layer包**（本地操作）
 
 ```bash
-# 创建工作目录
-mkdir -p python-layer/python
-cd python-layer
-
-# 安装requests库（Python 3.14）
-pip install requests -t python/
-
-# 打包Layer
-zip -r requests-layer-python314.zip python/
+# 构建 requests Layer（依赖 uv.lock 的锁定版本；默认 x86_64，arm64 函数请设置 LAMBDA_PLATFORM=aarch64-manylinux2014）
+./function/build_layer.sh
 
 # 验证包结构
-unzip -l requests-layer-python314.zip
-# 应该看到: python/requests/...
+unzip -l function/requests-layer-python314.zip | grep 'python/requests/'
 ```
+
+修改 `function/lambda_function.py` 后，运行 `python3 function/sync_inline_code.py` 同步到 `CNPhDCentral.yaml`，`--check` 可检查是否过期。
 
 ### 一、部署集中通知账号
 
@@ -87,7 +97,7 @@ unzip -l requests-layer-python314.zip
 aws lambda publish-layer-version \
   --layer-name requests-python314 \
   --description "Python 3.14 requests library" \
-  --zip-file fileb://requests-layer-python314.zip \
+  --zip-file fileb://function/requests-layer-python314.zip \
   --compatible-runtimes python3.14 \
   --region cn-northwest-1
 ```
