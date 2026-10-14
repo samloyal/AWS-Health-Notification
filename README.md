@@ -77,7 +77,7 @@ uv lock                      # 修改 pyproject.toml 后重新锁定
    - **企业微信** - [消息推送](https://developer.work.weixin.qq.com/document/path/99110)
    - **Slack** - [Sending messages using incoming webhooks](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/)
 
-2. **创建Lambda Layer包**（本地操作）
+2. **创建Lambda Layer包**（本地操作，在仓库根目录执行，需已安装 [uv](https://docs.astral.sh/uv/)，如 `brew install uv`）
 
 ```bash
 # 构建 requests Layer（依赖 uv.lock 的锁定版本；默认 x86_64，arm64 函数请设置 LAMBDA_PLATFORM=aarch64-manylinux2014）
@@ -87,7 +87,7 @@ uv lock                      # 修改 pyproject.toml 后重新锁定
 unzip -l function/requests-layer-python314.zip | grep 'python/requests/'
 ```
 
-修改 `function/lambda_function.py` 后，运行 `python3 function/sync_inline_code.py` 同步到 `CNPhDCentral.yaml`，`--check` 可检查是否过期。
+注意：`CNPhDCentral.yaml` 内联了 `function/lambda_function.py` 的代码。部署前运行 `python3 function/sync_inline_code.py --check`，若提示过期，先运行 `python3 function/sync_inline_code.py` 同步。
 
 ### 一、部署集中通知账号
 
@@ -139,6 +139,22 @@ aws cloudformation describe-stacks \
 
 记录输出的EventBus ARN，用于推送账号配置。
 
+#### 已部署的集中账号：升级栈
+
+若 `PhDCentral` 栈已经存在，使用 `update-stack` 升级，不要重新 `create-stack`。新模板新增了 SQS 失败队列和异步重试配置，升级会在原栈上创建这些资源。若重新发布了 Layer，把 `RequestsLayerArn` 换成新版本的 ARN。
+
+```bash
+aws cloudformation update-stack \
+  --stack-name PhDCentral \
+  --template-body file://CNPhDCentral.yaml \
+  --parameters \
+    ParameterKey=WebhookUrl,ParameterValue=<你的Webhook地址> \
+    ParameterKey=RequestsLayerArn,ParameterValue=<Layer的ARN> \
+    ParameterKey=AllowedAccountIds,ParameterValue=<允许的账号ID列表,逗号分隔> \
+  --capabilities CAPABILITY_IAM \
+  --region cn-northwest-1
+```
+
 ### 二、部署推送账号
 
 在每个需要监控PHD事件的AWS账号中执行：
@@ -185,14 +201,33 @@ aws logs tail /aws/lambda/PhDNotifyLambda --follow --region cn-northwest-1
 
 ## 更新Webhook地址
 
+通过 `update-stack` 修改 `WebhookUrl` 参数，其余参数沿用当前栈的值。不要直接用 `update-function-configuration` 修改 Lambda 环境变量，否则会与 CloudFormation 栈的配置产生漂移，下次升级时被覆盖。
+
 ```bash
-aws lambda update-function-configuration \
-  --function-name PhDNotifyLambda \
-  --environment "Variables={WEBHOOK_URL=<新的Webhook地址>}" \
+aws cloudformation update-stack \
+  --stack-name PhDCentral \
+  --use-previous-template \
+  --parameters \
+    ParameterKey=WebhookUrl,ParameterValue=<新的Webhook地址> \
+    ParameterKey=RequestsLayerArn,UsePreviousValue=true \
+    ParameterKey=AllowedAccountIds,UsePreviousValue=true \
+    ParameterKey=AllowedOrganizationIds,UsePreviousValue=true \
+  --capabilities CAPABILITY_IAM \
   --region cn-northwest-1
 ```
 
 ## 故障排查
+
+### 发送失败的事件
+
+发送失败时 Lambda 会抛出异常，异步调用自动重试2次；重试仍失败的事件进入 `PhDNotifyFailureQueue`（保留14天）。重试可能导致同一条消息重复送达。查看失败事件：
+
+```bash
+QUEUE_URL=$(aws sqs get-queue-url --queue-name PhDNotifyFailureQueue \
+  --query QueueUrl --output text --region cn-northwest-1)
+aws sqs receive-message --queue-url "$QUEUE_URL" --max-number-of-messages 10 \
+  --region cn-northwest-1
+```
 
 ### Lambda执行失败
 - 检查Layer是否正确安装：`aws lambda get-function --function-name PhDNotifyLambda`
