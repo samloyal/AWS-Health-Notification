@@ -83,6 +83,14 @@ Resources:
             Action: 'sts:AssumeRole'
       ManagedPolicyArns:
         - 'arn:aws-cn:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: SendToFailureQueue
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'sqs:SendMessage'
+                Resource: !GetAtt PhDNotifyFailureQueue.Arn
 
   PhDNotifyLambda:
     Type: AWS::Lambda::Function
@@ -116,12 +124,22 @@ Resources:
 
           def send_dingtalk(webhook_url, content):
               data = {"msgtype": "text", "text": {"content": content.strip()}}
-              response = requests.post(webhook_url, headers={"Content-Type": "application/json"}, json=data, timeout=10, verify=False)
+              response = requests.post(webhook_url, headers={"Content-Type": "application/json"}, json=data, timeout=10)
               result = response.json()
               return result.get("errcode") == 0, result
 
           def send_teams(webhook_url, content):
-              data = {"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.5", "body": [{"type": "TextBlock", "text": content, "size": "Medium", "wrap": True}]}}]}
+              data = {
+                  "type": "message",
+                  "attachments": [{
+                      "contentType": "application/vnd.microsoft.card.adaptive",
+                      "content": {
+                          "type": "AdaptiveCard",
+                          "version": "1.5",
+                          "body": [{"type": "TextBlock", "text": content, "size": "Medium", "wrap": True}]
+                      }
+                  }]
+              }
               response = requests.post(webhook_url, headers={"Content-Type": "application/json"}, json=data, timeout=10)
               return response.status_code in [200, 202], {"code": response.status_code}
 
@@ -155,6 +173,7 @@ Resources:
                       platform = "Slack"
                   else:
                       return False, {"error": "无法识别的Webhook URL"}
+
                   if success:
                       logger.info(f"{platform}消息发送成功")
                   else:
@@ -166,12 +185,36 @@ Resources:
 
           def lambda_handler(event, context):
               message_content = event if isinstance(event, str) else json.dumps(event, indent=2, ensure_ascii=False)
+
               if not WEBHOOK_URL:
                   logger.error("未配置WEBHOOK_URL环境变量")
                   return {'statusCode': 500, 'body': json.dumps({"error": "未配置WEBHOOK_URL"})}
+
               success, result = send_notification(WEBHOOK_URL, message_content)
               logger.info(f"消息发送响应：{result}")
-              return {'statusCode': 200 if success else 500, 'body': json.dumps({"message": "事件已处理", "send_result": result}, ensure_ascii=False)}
+              if not success:
+                  raise RuntimeError(f"消息发送失败：{result}")
+
+              return {
+                  'statusCode': 200 if success else 500,
+                  'body': json.dumps({"message": "事件已处理", "send_result": result}, ensure_ascii=False)
+              }
+
+  PhDNotifyFailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: PhDNotifyFailureQueue
+      MessageRetentionPeriod: 1209600
+
+  PhDNotifyEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref PhDNotifyLambda
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt PhDNotifyFailureQueue.Arn
 
   PhDNotifyLambdaPermission:
     Type: AWS::Lambda::Permission

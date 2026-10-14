@@ -15,7 +15,7 @@ def send_feishu(webhook_url, content):
 
 def send_dingtalk(webhook_url, content):
     data = {"msgtype": "text", "text": {"content": content.strip()}}
-    response = requests.post(webhook_url, headers={"Content-Type": "application/json"}, json=data, timeout=10, verify=False)
+    response = requests.post(webhook_url, headers={"Content-Type": "application/json"}, json=data, timeout=10)
     result = response.json()
     return result.get("errcode") == 0, result
 
@@ -83,6 +83,8 @@ def lambda_handler(event, context):
     
     success, result = send_notification(WEBHOOK_URL, message_content)
     logger.info(f"消息发送响应：{result}")
+    if not success:
+        raise RuntimeError(f"消息发送失败：{result}")
     
     return {
         'statusCode': 200 if success else 500,
